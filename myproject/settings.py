@@ -99,11 +99,11 @@ WSGI_APPLICATION = 'myproject.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'ocr_playground',
+        'NAME': 'aro_ocr',
         'USER': 'root',
         'PASSWORD': 'Kartick@9163',
         'HOST': 'localhost',  
-        'PORT': '3307',
+        'PORT': '3306',
     }
 }
 

@@ -81,7 +81,7 @@ def register(request):
             )
             user.save()
 
-            send_email('kartickdutta2153@gmail.com', email, 'Register Yourself', fullname)
+            # send_email('kartickdutta2153@gmail.com', email, 'Register Yourself', fullname)
 
             return JsonResponse({'msg': 'User registered successfully', 'status': True})
 
@@ -233,7 +233,7 @@ def resend_mail(request):
         if not user:
             return JsonResponse({'msg': 'User not found', 'status': False})
         fullname = user.fullname
-        send_email('kartickdutta2153@gmail.com', email, 'Register Yourself', fullname)
+        # send_email('kartickdutta2153@gmail.com', email, 'Register Yourself', fullname)
 
         return JsonResponse({'msg': 'Email resent successfully', 'status': True})
 
