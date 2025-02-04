@@ -1,22 +1,30 @@
 from django.db import models
 
-# Create your models here.
+from django.utils.timezone import localtime
+import pytz
+
 class user_details(models.Model):
-    id = models.AutoField(primary_key=True)  # Auto-incrementing primary key
-    fullname = models.CharField(max_length=255, null=True)  # VARCHAR field
-    email = models.CharField(max_length=255, null=True)  # Email field
-    mobile_no = models.CharField(max_length=255, null=True)  # VARCHAR field
-    password = models.CharField(max_length=255, null=True)  # VARCHAR field
-    registration_date = models.DateTimeField(auto_now_add=True, null=True)  # DATETIME field
-    access_type = models.CharField(max_length=255, null=True)  # VARCHAR field
-    organization = models.CharField(max_length=255, null=True)  # VARCHAR field
-    user_role = models.CharField(max_length=255, null=True)  # VARCHAR field
-    email_status = models.CharField(max_length=255, null=True)  # VARCHAR field
-    preference_flg = models.CharField(max_length=255, null=True)  # VARCHAR field
-    jwt_token = models.TextField(null=True)  # Longtext field
+    id = models.AutoField(primary_key=True)
+    fullname = models.CharField(max_length=255, null=True)
+    email = models.CharField(max_length=255, null=True)
+    mobile_no = models.CharField(max_length=255, null=True)
+    password = models.CharField(max_length=255, null=True)
+    registration_date = models.DateTimeField(auto_now_add=True, null=True)
+    access_type = models.CharField(max_length=255, null=True)
+    organization = models.CharField(max_length=255, null=True)
+    user_role = models.CharField(max_length=255, null=True)
+    email_status = models.CharField(max_length=255, null=True)
+    preference_flg = models.CharField(max_length=255, null=True)
+    jwt_token = models.TextField(null=True)
 
     class Meta:
-        db_table = 'user_details'  # Table name
+        db_table = 'user_details'
+
+    def save(self, *args, **kwargs):
+        if self.registration_date:
+            ist = pytz.timezone('Asia/Kolkata')
+            self.registration_date = localtime(self.registration_date, ist)
+        super().save(*args, **kwargs)
 
 class api_key(models.Model):
     slno = models.AutoField(primary_key=True)  # Auto-incrementing primary key

@@ -1,12 +1,11 @@
-from datetime import datetime, timedelta  # Import only what you need from the datetime module
-import json, jwt, logging
+from datetime import datetime, timedelta  
+import json, jwt
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse, HttpResponse, HttpResponseRedirect
 from django.db import connection
 from django.contrib.auth.hashers import make_password
 from django.template import loader
-from django.utils.timezone import now
-from .models import user_details, api_key, user_preference
+# from django.utils.timezone import now
 from . import send_email, base64_to_text, ip4, generate_api_key
 
 
@@ -21,37 +20,39 @@ def vrfy_html(request):
 def email_vrfy(request):
     if request.method == 'GET':
         emailid = base64_to_text(request.GET.get('uid'))
+
         if emailid:
-            try:
-                user = user_details.objects.filter(email=emailid).first()
-
-                if user:
-                    email_status = user.email_status
-
-                    if email_status == '0':  # Unverified
-                        user.email_status = '1'  # Update to verified
-                        user.save()
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT email_status FROM user_details WHERE email = %s", [emailid])
+                user_data = cursor.fetchone()
+                
+                if user_data:
+                    email_status = user_data[0]
+                    if email_status == '0':
+                        cursor.execute("UPDATE user_details SET email_status = 1 WHERE email = %s", [emailid])
+                        connection.commit()
                         return HttpResponseRedirect(f"http://{ip4()}:8000/api/vrfy_html")
+                    
                     else:
                         template = loader.get_template('already_vrfy.html')
-                        return HttpResponse(template.render())
+                        return HttpResponse(template.render())                        
                 else:
                     template = loader.get_template('something_went_wrong.html')
                     return HttpResponse(template.render())
-            
-            except Exception as e:
-                logging.error(f"Error in email verification: {str(e)}")
-                template = loader.get_template('something_went_wrong.html')
-                return HttpResponse(template.render())
-        
+                    
         else:
             template = loader.get_template('something_went_wrong.html')
             return HttpResponse(template.render())
+
+    else:
+        return HttpResponse("Invalid request method.", status=405)
 
 @csrf_exempt
 def register(request):
     if request.method == 'POST':
         try:
+
+            current_time = datetime.now()
             reqbody = json.loads(request.body.decode('utf-8'))
             
             fullname = reqbody.get('fullname')
@@ -60,36 +61,42 @@ def register(request):
             password = reqbody.get('password')
             access_type = reqbody.get('access_type')
 
-            # Validate required fields
-            if not (fullname and email and mobile_no and password and access_type):
-                return JsonResponse({'error': 'Missing required fields', 'status': False, 'code': '3'})
+            if not (fullname and email and mobile_no and password and access_type ):
+                return JsonResponse({'error': 'Missing required fields', 'status': False, 'code':'3'})
 
-            # Check if email already exists
-            if user_details.objects.filter(email=email).exists():
-                return JsonResponse({'msg': 'Email already exists', 'code': '2', 'status': False})
+            
+            with connection.cursor() as cursor:
 
-            # Save the user details in the database
-            user = user_details(
-                fullname=fullname,
-                email=email,
-                mobile_no=mobile_no,
-                password=password,  
-                registration_date=now(),
-                email_status='0',
-                preference_flg='0',
-                access_type=access_type
-            )
-            user.save()
+                cursor.execute("SELECT id FROM user_details WHERE email = %s", [email])
+                alldata3 = cursor.fetchone()
+                if alldata3:
+                    return JsonResponse({'msg': 'Email already exists', 'code':'3','status': False})
 
-            # send_email('kartickdutta2153@gmail.com', email, 'Register Yourself', fullname)
+                
+                
+                cursor.execute("SELECT id FROM user_details WHERE email = %s", [email])
+                alldata2 = cursor.fetchone()
+                if alldata2:
+                    return JsonResponse({'msg': 'Email already exists', 'code':'2','status': False})
+                               
+                
+                cursor.execute(
+                    "INSERT INTO user_details (fullname, email, mobile_no, password, registration_date, email_status, preference_flg, access_type) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)", 
+                    [fullname, email, mobile_no, password, current_time, '0', '0', access_type]
+                )
+                connection.commit()
 
-            return JsonResponse({'msg': 'User registered successfully', 'status': True})
+                # send_email('kartickdutta2153@gmail.com', email, 'Register Yourself', fullname)  # Send verification email
+
+                return JsonResponse({'msg': 'User registered successfully', 'status': True})
 
         except json.JSONDecodeError:
             return JsonResponse({'error': 'Invalid JSON input', 'status': False})
         
         except Exception as e:
-            return JsonResponse({'error': {str(e)}, 'status': False})
+            print(f"Register failed: {str(e)}")
+            return JsonResponse({'error': 'Internal server error', 'status': False})
 
     return JsonResponse({'error': 'Method not allowed', 'status': False})
 
@@ -105,54 +112,76 @@ def login(request):
             password = data.get('password')
 
             if not email_id or not password:
-                return JsonResponse({'msg': 'Username and password are required', 'status': False, 'code': '3'})
+                return JsonResponse({'msg': 'Username and password are required', 'status': False, 'code':'3'})
 
-            # Fetch the user from the database
-            user = user_details.objects.filter(email=email_id).first()
-            if not user:
-                return JsonResponse({'msg': 'Invalid email or password', 'code': '2', 'status': False})
-            
-            if password != user.password:  
-                return JsonResponse({'msg': 'Invalid email or password', 'code': '2', 'status': False})
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT id, fullname, email, mobile_no, password, registration_date, organization, user_role, preference_flg, email_status, jwt_token, access_type FROM user_details WHERE BINARY email = %s", [email_id])
+                user_data = cursor.fetchone()
 
-            # Check email status
-            if user.email_status != '1':
-                return JsonResponse({'msg': 'Please verify your email', 'code': '1', 'status': False})
+                if not user_data:
+                    return JsonResponse({'msg': 'Invalid email or password', 'code' : '2' ,'status': False})
 
-            # Create the JWT token
-            token_payload = {
-                'user_id': user.id,
-                'fullname': user.fullname,
-                'email': user.email,
-                'mobile_no': user.mobile_no,
-                'access_type': user.access_type,
-                'registration_date': user.registration_date.isoformat() if user.registration_date else None,
-                'organization': user.organization,
-                'user_role': user.user_role,
-                'preference_flg': user.preference_flg,
-                'email_status': user.email_status,
-                'iat': datetime.utcnow(),
-                'exp': datetime.utcnow() + timedelta(hours=1)  # Token expires in 2 hours
-            }
-            token = jwt.encode(token_payload, SECRET_KEY, algorithm='HS256')
+                (
+                    user_id, fullname, email, mobile_no, stored_password,
+                    registration_date, organization, user_role, preference_flg, email_status, jwt_token, access_type
+                ) = user_data
 
-            # Update the JWT token in the database
-            user.jwt_token = token
-            user.save()
+                if email_status != '1':
+                    return JsonResponse({'msg': 'Please verify your email', 'code': '1', 'status': False})
 
-            return JsonResponse({
-                'msg': 'Login successful',
-                'status': True,
-                'token': token
-            })
+                # Verify password (plain-text comparison)
+                if password != stored_password:
+                    return JsonResponse({'msg': 'Invalid username or password', 'code' : '2' ,'status': False})
+
+                # Create the JWT token
+                token_payload = {
+                    'user_id': user_id,
+                    'fullname': fullname,
+                    'email': email,
+                    'mobile_no': mobile_no,
+                    'access_type':access_type,
+                    'registration_date': registration_date.isoformat() if registration_date else None,
+                    'organization': organization,
+                    'user_role': user_role,
+                    'preference_flg':preference_flg,
+                    'email_status': email_status,
+                    'iat': datetime.utcnow(),
+                    'exp': datetime.utcnow() + timedelta(hours=2)  # Token expires in 1 hour
+                }
+                token = jwt.encode(token_payload, SECRET_KEY, algorithm='HS256')
+
+                # Store the token in the database
+                cursor.execute(
+                    "UPDATE user_details SET jwt_token = %s WHERE id = %s",
+                    [token, user_id]
+                )
+                
+                user_details = {
+                    'user_id': user_id,
+                    'fullname': fullname,
+                    'email': email,
+                    'mobile_no': mobile_no,
+                    'access_type':access_type,
+                    'registration_date': registration_date,
+                    'organization': organization,
+                    'user_role': user_role,
+                    'email_status': email_status,
+                }
+
+                return JsonResponse({
+                    'msg': 'Login successful',
+                    'status': True,
+                    'token': token
+                })
 
         except json.JSONDecodeError:
             return JsonResponse({'msg': 'Invalid JSON input', 'status': False})
 
         except Exception as e:
-            return JsonResponse({'msg': f"An error occurred: {str(e)}", 'status': False})
+            print(f"Login failed: {str(e)}")
+            return JsonResponse({'msg': 'Internal server error', 'status': False})
 
-    return JsonResponse({'msg': 'Method not allowed', 'status': False})
+    return JsonResponse({'msg': 'Method not allowed', 'status': False}) 
 
 
 
@@ -166,25 +195,33 @@ def usr_preference(request):
 
             if not preference or not email:
                 return JsonResponse({'msg': 'Preference or email is missing', 'status': False})
-            
-            user = user_details.objects.filter(email=email).first()
 
-            if user:
-                preferences_list = preference.split(",")
-                user_preferences = [
-                    user_preference(user_id=user.id, purpose=pref.strip()) for pref in preferences_list
-                ]
-                user_preference.objects.bulk_create(user_preferences)
-                user.preference_flg = '1'
-                user.save()
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT id FROM user_details WHERE email = %s", [email])
+                alldata = cursor.fetchone()
+
+            if alldata:
+                user_id = alldata[0]  
+                preferences_list = preference.split(",")  
+
+                with connection.cursor() as cursor:
+                    for pref in preferences_list:
+                        cursor.execute(
+                            "INSERT INTO user_preference (purpose, user_id) VALUES (%s, %s)",
+                            [pref.strip(), user_id]
+                        )
+                    cursor.execute(
+                        "UPDATE user_details SET preference_flg = '1' WHERE id = %s",
+                        [user_id]
+                    )
+                    connection.commit()
 
                 return JsonResponse({"msg": "User preferences added successfully", "status": True})
             else:
-                return JsonResponse({'msg': 'User not found', 'status': False})
-
+                return JsonResponse({'msg': 'User not found', 'status': False})        
         except Exception as e:
-            return JsonResponse({'msg': {str(e)}, 'status': False})
-
+            print(f"User preference update failed: {str(e)}")
+            return JsonResponse({'msg': 'Internal server error', 'status': False})
     else:
         return JsonResponse({"msg": "Method not allowed", "status": False})
     
@@ -192,30 +229,21 @@ def usr_preference(request):
 @csrf_exempt
 def user_role(request):
     if request.method == 'POST':
-        try:            
-            reqbody = json.loads(request.body.decode('utf-8'))
-            role = reqbody.get('role')
-            email = reqbody.get('email')
-
-            if not role or not email:
-                return JsonResponse({'msg': 'Role or email is missing', 'status': False})
-
-            # Fetch the user based on email
-            user = user_details.objects.filter(email=email).first()
-
-            if user:
-                user.user_role = role
-                user.save()
-
-                return JsonResponse({"msg": 'User role updated successfully', "status": True})
-            else:
-                return JsonResponse({'msg': 'User not found', 'status': False})
-
-        except Exception as e:
-            return JsonResponse({'msg': f"Error: {str(e)}", 'status': False})
+        reqbody = json.loads(request.body.decode('utf-8'))
+        role = reqbody.get('role')
+        email = reqbody.get('email')
+        with connection.cursor() as cursor:
+                cursor.execute("SELECT id FROM user_details WHERE email = %s", [email])
+                alldata = cursor.fetchone()
+        if alldata:
+            with connection.cursor() as cursor:
+                cursor.execute("UPDATE user_details SET user_role = %s WHERE email = %s",[role, email])
+                connection.commit()
+            return JsonResponse({"msg":'user role updated successfully',"status":True})
+        else:
+            return JsonResponse({'msg':'Something went wrong','status':False})
     else:
-        return JsonResponse({"msg": "Method not allowed", "status": False})
-    
+        return JsonResponse({"msg":"method not allowed", "status":False})
 
 @csrf_exempt
 def resend_mail(request):
@@ -226,162 +254,133 @@ def resend_mail(request):
         reqbody = json.loads(request.body.decode('utf-8'))
         email = reqbody.get('email')
 
-        if not email:
-            return JsonResponse({'msg': 'Email is missing', 'status': False})
-        user = user_details.objects.filter(email=email).first()
-
-        if not user:
-            return JsonResponse({'msg': 'User not found', 'status': False})
-        fullname = user.fullname
-        # send_email('kartickdutta2153@gmail.com', email, 'Register Yourself', fullname)
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT fullname FROM user_details WHERE email = %s", [email])
+            result = cursor.fetchone()
+        fullname = result[0]
+        send_email('kartickdutta2153@gmail.com', email, 'Register Yourself', fullname)
 
         return JsonResponse({'msg': 'Email resent successfully', 'status': True})
-
+    
     except Exception as e:
         return JsonResponse({'msg': f'An error occurred: {str(e)}', 'status': False})
     
-
 @csrf_exempt
 def generate_apikey(request):
     if request.method != 'POST':
         return JsonResponse({'msg': 'Method not allowed', 'status': False})
-
-    try:
-        reqbody = json.loads(request.body.decode('utf-8'))
-        email = reqbody.get('email')
-        api_name = reqbody.get('api_name')
-
-        if not api_name:
-            return JsonResponse({'msg': 'Please enter an API key name', 'status': False})
-
-        current_time = datetime.now()
-
-        # Fetch the user details based on the email
-        user = user_details.objects.filter(email=email).first()
-        if not user:
-            return JsonResponse({'msg': 'Email not found', 'status': False})
-
-        jwt_token = user.jwt_token
-        SECRET_KEY = 'arodek'
-
-        try:
-            # Decode the JWT token
-            decoded_jwt_token = jwt.decode(jwt_token, SECRET_KEY, algorithms=["HS256"])
-            jwt_exp = decoded_jwt_token.get('exp')
-
-            # Generate API key
-            api_key_value = generate_api_key()
-
-            # Check if the API name already exists for this user
-            api_name_exists = api_key.objects.filter(api_name__iexact=api_name, user_id=user.id).exists()
-            if api_name_exists:
-                return JsonResponse({"msg": "API name cannot be the same", 'status': False})
-
-            # Create a new API key record
-            api_key.objects.create(
-                api_keys=api_key_value,
-                user_id=user.id,
-                api_name=api_name,
-                created_time=current_time,
-                free_count=10
-            )
-
-            return JsonResponse({'msg': 'API key generated successfully', 'status': True})
-
-        except jwt.ExpiredSignatureError:
-            return JsonResponse({'msg': 'Token has expired', 'status': False})
-        except jwt.InvalidTokenError:
-            return JsonResponse({'msg': 'Invalid token', 'status': False})
-
-    except Exception as e:
-        return JsonResponse({'msg': f'An error occurred: {str(e)}', 'status': False})
     
+    reqbody = json.loads(request.body.decode('utf-8'))
+    email = reqbody.get('email')
+    api_name = reqbody.get('api_name')
+    if not api_name:
+        return JsonResponse({'msg':'please enter an api key name', 'status':False})
+    current_time = datetime.now()
+    
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT jwt_token, id FROM user_details WHERE email = %s", [email])
+        result = cursor.fetchone()
+        
+        if not result:
+            return JsonResponse({'msg': 'Email not found', 'status': False})
+        
+        user_id = result[1]
+        jwt_token = result[0]
+    
+    SECRET_KEY = 'arodek'
+    try:
+        decoded_jwt_token = jwt.decode(jwt_token, SECRET_KEY, algorithms=["HS256"])
+        jwt_exp = decoded_jwt_token.get('exp')
+        api_key = generate_api_key()
+
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM api_key WHERE BINARY api_name = %s AND user_id = %s", [api_name, user_id])
+            apinamecount = cursor.fetchone()[0]  
+        
+        if apinamecount > 0:
+            return JsonResponse({"msg": "API name cannot be the same", 'status': False})
+
+        with connection.cursor() as cursor:
+            cursor.execute("INSERT INTO api_key (api_keys, user_id, api_name, created_time, free_count) VALUES (%s, %s, %s, %s, %s)", [api_key, user_id, api_name, current_time, 10])
+            connection.commit()  
+
+        return JsonResponse({'msg': 'api key generated successfully', 'status': True})
+    
+    except jwt.ExpiredSignatureError:
+        return JsonResponse({'msg': 'Token has expired', 'status': False})
+    except jwt.InvalidTokenError:
+        return JsonResponse({'msg': 'Invalid token', 'status': False})
 
 @csrf_exempt
 def fetch_api(request):
     if request.method != 'POST':
         return JsonResponse({'msg': 'Method not allowed', 'status': False})
 
-    try:
-        reqbody = json.loads(request.body.decode('utf-8'))
-        email = reqbody.get('email')
+    reqbody = json.loads(request.body.decode('utf-8'))
+    email = reqbody.get('email')
 
-        # Fetch user details
-        user = user_details.objects.filter(email=email).first()
-        if not user:
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT jwt_token, id FROM user_details WHERE email = %s", [email])
+        result = cursor.fetchone()
+
+        if not result:
             return JsonResponse({'msg': 'Email not found', 'status': False})
+        
+        user_id = result[1]
+        jwt_token = result[0]
 
-        jwt_token = user.jwt_token
-        SECRET_KEY = 'arodek'
+    SECRET_KEY = 'arodek'  
+    
+    try:
+        jwt.decode(jwt_token, SECRET_KEY, algorithms=["HS256"], options={"verify_exp": True})        
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT api_keys, api_name, created_time FROM api_key WHERE user_id = %s", 
+                [user_id]
+            )
+            result = cursor.fetchall()
 
-        try:
-            # Decode the JWT token
-            jwt.decode(jwt_token, SECRET_KEY, algorithms=["HS256"], options={"verify_exp": True})
+        if result:
+            api_data = [
+                {"api_name": item[1], "api_key": item[0], "created_time": item[2]} 
+                for item in result
+            ]
+            return JsonResponse({"msg": api_data, "status": True})
+        else:
+            return JsonResponse({"msg": result, 'message':'No key available',"status": False})
 
-            # Fetch associated API keys
-            api_keys = api_key.objects.filter(user_id=user.id).values('api_keys', 'api_name', 'created_time')
-
-            if api_keys.exists():
-                api_data = [
-                    {
-                        "api_name": item['api_name'],
-                        "api_key": item['api_keys'],
-                        "created_time": item['created_time'],
-                    }
-                    for item in api_keys
-                ]
-                return JsonResponse({"msg": api_data, "status": True})
-            else:
-                return JsonResponse({"msg": [], "message": "No key available", "status": False})
-
-        except jwt.ExpiredSignatureError:
-            return JsonResponse({'msg': 'Token has expired', 'status': False}, status=401)
-        except jwt.InvalidTokenError:
-            return JsonResponse({'msg': 'Invalid token', 'status': False})
-
-    except Exception as e:
-        return JsonResponse({'msg': f'An error occurred: {str(e)}', 'status': False})
-
-
+    except jwt.ExpiredSignatureError:
+        return JsonResponse({'msg': 'Token has expired', 'status': False},status=401)
+    except jwt.InvalidTokenError:
+        return JsonResponse({'msg': 'Invalid token', 'status': False})
 
 @csrf_exempt
 def delete_api_key(request):
     if request.method != 'POST':
         return JsonResponse({'msg': 'Method not allowed', 'status': False})    
-
+    reqbody = json.loads(request.body.decode('utf-8'))
+    email = reqbody.get('email')
+    api_name = reqbody.get('api_name')
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT jwt_token, id FROM user_details WHERE email = %s", [email])
+        result = cursor.fetchone()
+    if not result:
+        return JsonResponse({'msg': 'User not found', 'status': False})
+    jwt_token, user_id = result
+    SECRET_KEY = 'arodek'
     try:
-        reqbody = json.loads(request.body.decode('utf-8'))
-        email = reqbody.get('email')
-        api_name = reqbody.get('api_name')
+        jwt.decode(jwt_token, SECRET_KEY, algorithms=["HS256"], options={"verify_exp": True})
+        with connection.cursor() as cursor:
+            cursor.execute("DELETE FROM api_key WHERE BINARY api_name = %s AND BINARY user_id = %s", [api_name, user_id])
+            rows_affected = cursor.rowcount
 
-        # Check if email exists in user_details
-        user = user_details.objects.filter(email=email).first()
-        if not user:
-            return JsonResponse({'msg': 'User not found', 'status': False})
+        if rows_affected > 0:
+            return JsonResponse({'msg': 'API key deleted successfully', 'status': True})
+        else:
+            return JsonResponse({'msg': 'Something went wrong', 'status': False})
 
-        jwt_token = user.jwt_token
-        user_id = user.id
-        SECRET_KEY = 'arodek'
-
-        try:
-            # Validate the JWT token
-            jwt.decode(jwt_token, SECRET_KEY, algorithms=["HS256"], options={"verify_exp": True})
-
-            # Check and delete the API key
-            deleted_count, _ = api_key.objects.filter(api_name=api_name, user_id=user_id).delete()
-
-            if deleted_count > 0:
-                return JsonResponse({'msg': 'API key deleted successfully', 'status': True})
-            else:
-                return JsonResponse({'msg': 'API key not found or deletion failed', 'status': False})
-
-        except jwt.ExpiredSignatureError:
-            return JsonResponse({'msg': 'Token has expired', 'status': False})
-        except jwt.DecodeError:
-            return JsonResponse({'msg': 'Invalid token', 'status': False})
-
-    except Exception as e:
-        return JsonResponse({'msg': f'An error occurred: {str(e)}', 'status': False})
-    
-
+    except jwt.ExpiredSignatureError:
+        return JsonResponse({'msg': 'Token has expired', 'status': False})
+    except jwt.DecodeError:
+        return JsonResponse({'msg': 'Invalid token', 'status': False})
 
